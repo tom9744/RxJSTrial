@@ -1,4 +1,3 @@
-import { animation } from '@angular/animations';
 import { Component, ElementRef, OnInit, ViewChild } from '@angular/core';
 import { animationFrameScheduler, concat, defer, fromEvent, interval, merge, Observable, of } from 'rxjs';
 import { 
@@ -17,6 +16,36 @@ export class AppComponent implements OnInit {
   backgroundColors = ['lightcoral', 'lightcyan', 'lightgreen', 'lightskyblue', 'lightseagreen'];
 
   ngOnInit(): void {
+    const carousel$ = this.generateCarousel();
+
+    carousel$.subscribe(position => {
+      const { nativeElement: containerElem } = this.container;
+
+      containerElem.style.transform = `translateX(${position}px)`;
+    });
+  }
+
+  private generateAnimation(from: number, to: number, duration: number): Observable<number> {
+    // defer 오퍼레이터를 이용하여, Observable 생성 시점 지연
+    return defer(() => {
+      const scheduler = animationFrameScheduler;
+      const startTime = scheduler.now();
+      // interval 오퍼레이터의 RxJS 스케줄러 변경 (null → animationFrame) 
+      const animationRatio$ = interval(0, scheduler)
+        .pipe(
+          map(() => (scheduler.now() - startTime) / duration),
+          takeWhile(rate => rate < 1),
+        );
+
+      // 완료된 Observable에 강제로 Observable<1>을 추가하여 반환
+      return concat(animationRatio$, of(1))
+        .pipe(
+          map(rate => from + (to - from) * rate),
+        );
+    });
+  }
+
+  private generateCarousel() {
     const { nativeElement } = this.carousel;
 
     // DOM 이벤트를 Observable로 변환
@@ -29,7 +58,7 @@ export class AppComponent implements OnInit {
         map(_event => (nativeElement as HTMLDivElement).clientWidth),
       );
 
-    // 마우스 위치에 대한 Observable로 변환
+    // start$에서 방출되는 MouseEvent 형태의 데이터를 pageX 데이터로 변환
     const startPos$ = start$.pipe(
       map(event => event.pageX),
     );
@@ -37,19 +66,21 @@ export class AppComponent implements OnInit {
       map(event => event.pageX),
     );
 
-    // startPos$을 movePos$로 변환하고, 새로운 drag$을 생성하여 반환
+    // startPos$에서 방출되는 pageX 데이터를 movePos$로 변환
     const drag$ = startPos$.pipe(
       switchMap(startPosition => {
+        // movePos$는 end$에서 데이터가 방출되기 전까지 pageX 데이터 방출
         return movePos$.pipe(
           map(movePosition => movePosition - startPosition),
           map(distance => ({ distance, size: null })),
           takeUntil(end$),
         );
       }),
+      // Hot Observable로 변환
       share(),
     );
 
-    // 새로운 drag$ 옵저버블이 생성되면, 앞선 옵저버블에 대한 구독을 해제
+    // drag$에서 방출되는 distance 데이터를 end$로 변환
     const drop$ = drag$.pipe(
       switchMap(distance => {
         return end$.pipe(
@@ -57,35 +88,37 @@ export class AppComponent implements OnInit {
           first(),
         );
       }),
-      // size$에서 가장 최근에 방출된 데이터를 가공하여 반환
+      // size$에서 가장 최근에 방출된 데이터를 포함하여 반환
       withLatestFrom(size$, (drag, size) => {
         return { ...drag, size };
       }),
     );
 
-    // scan 오퍼레이터를 사용한 상태 관리
-    const carousel$ = merge(drag$, drop$)
-      .pipe(
-        scan((store, {distance, size}) => {
+    return merge(drag$, drop$)
+    .pipe(
+        // scan 오퍼레이터를 사용하여, 데이터 방출 시 상태 관리 
+        scan((store, { distance, size }) => {
           const updateStore = {
             ...store,
             from: -(store.index * store.size) + distance,
           };
 
-          // drag 시점
+          // drag$에서 데이터가 방출되는 경우
           if (size === null) {
             updateStore.to = updateStore.from; 
           }
-          // drop 시점
+          // drop$에서 데이터가 방출되는 경우
           else {
             let toBeIndex = store.index;
 
+            // 다음 패널로의 이동 여부 결정
             if (Math.abs(distance) >= 30) {
               toBeIndex = distance < 0
                 ? Math.min(toBeIndex + 1, this.backgroundColors.length - 1)
                 : Math.max(toBeIndex - 1, 0);
             }
 
+            // 갱신될 상태 값 설정
             updateStore.index = toBeIndex;
             updateStore.to = -(toBeIndex * size);
             updateStore.size = size;
@@ -98,34 +131,12 @@ export class AppComponent implements OnInit {
           index: 0,
           size: 0,
         }),
+        // 애니메이션 재생 여부 결정
         switchMap(({ from ,to }) => {
           return from === to
             ? of(to)
             : this.generateAnimation(from, to, 300);
         }),
       );
-    
-    carousel$.subscribe(position => {
-      const containerElem = this.container.nativeElement as HTMLUListElement;
-
-      containerElem.style.transform = `translateX(${position}px)`;
-    });
-  }
-
-  private generateAnimation(from: number, to: number, duration: number): Observable<number> {
-    return defer(() => {
-      const scheduler = animationFrameScheduler;
-      const startTime = scheduler.now();
-      const interval$ = interval(0, scheduler)
-        .pipe(
-          map(() => (scheduler.now() - startTime) / duration),
-          takeWhile(rate => rate < 1),
-        );
-
-      return concat(interval$, of(1))
-        .pipe(
-          map(rate => from + (to - from) * rate),
-        );
-    });
   }
 }
